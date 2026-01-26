@@ -22,4 +22,7 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-exec sudo -iu developer
+echo "dockerd is up."
+
+# Keep container alive
+tail -f /dev/null

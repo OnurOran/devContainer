@@ -4,22 +4,22 @@ set -euo pipefail
 NAME="devmachine"
 IMAGE="devmachine:local"
 HOME_VOL="devmachine-home"
-DIND_VOL="devmachine-dind"   # DinD image/cache kalıcı olsun istersen; istemezsen kaldırabilirsin.
+DIND_VOL="devmachine-dind"
 
 usage() {
   cat <<EOF
 Usage: ./dev.sh [cmd]
 
 Default (no cmd): smart enter
-  - if container doesn't exist: create + attach
-  - if exists but stopped:      start + attach
-  - if running:                exec a new shell
+  - if container doesn't exist: create + start + exec developer shell
+  - if exists but stopped:      start + exec developer shell
+  - if running:                 exec developer shell
 
 Commands:
   build        Build image
   rebuild      Remove container + build image + up (keeps volumes)
   dev          Smart enter (same as default)
-  up           Create+start (or start if exists) and attach
+  up           Create+start (or start if exists), then exec developer shell
   in           Exec into running container, or up if not running
   stop         Stop container
   rm           Remove container (keeps volumes)
@@ -35,12 +35,17 @@ cmd_build() {
   docker build -t "$IMAGE" -f ./Dockerfile .
 }
 
+exec_shell() {
+  docker exec -it "$NAME" sudo -iu developer
+}
+
 cmd_up() {
   docker volume inspect "$HOME_VOL" >/dev/null 2>&1 || docker volume create "$HOME_VOL" >/dev/null
   docker volume inspect "$DIND_VOL" >/dev/null 2>&1 || docker volume create "$DIND_VOL" >/dev/null
 
   if ! exists_container; then
-    docker run -it \
+    # Start container in background; it will keep running (tail -f /dev/null)
+    docker run -d \
       --name "$NAME" \
       --hostname "$NAME" \
       --privileged \
@@ -48,30 +53,26 @@ cmd_up() {
       -e TERM="${TERM:-xterm-256color}" \
       -v "$HOME_VOL":/home/developer \
       -v "$DIND_VOL":/var/lib/docker \
-      "$IMAGE"
+      "$IMAGE" >/dev/null
   else
-    docker start -ai "$NAME"
+    if ! running_container; then
+      docker start "$NAME" >/dev/null
+    fi
   fi
+
+  exec_shell
 }
 
 cmd_in() {
   if running_container; then
-    docker exec -it "$NAME" bash
+    exec_shell
   else
     cmd_up
   fi
 }
 
 cmd_dev() {
-  if exists_container; then
-    if running_container; then
-      docker exec -it "$NAME" bash
-    else
-      docker start -ai "$NAME"
-    fi
-  else
-    cmd_up
-  fi
+  cmd_up
 }
 
 cmd_stop() { docker stop "$NAME" >/dev/null 2>&1 || true; }
