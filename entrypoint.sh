@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p /home/developer
-chown -R developer:developer /home/developer
+# Gracefully stop dockerd on container stop/restart
+cleanup() {
+  local dockerd_pid
+  dockerd_pid="$(cat /var/run/docker.pid 2>/dev/null)" || true
+  if [ -n "$dockerd_pid" ]; then
+    kill "$dockerd_pid" 2>/dev/null || true
+    wait "$dockerd_pid" 2>/dev/null || true
+  fi
+  exit 0
+}
+trap cleanup SIGTERM SIGINT
 
 # Start dockerd (DinD)
 mkdir -p /var/lib/docker
@@ -24,5 +33,5 @@ fi
 
 echo "dockerd is up."
 
-# Keep container alive
-tail -f /dev/null
+# Keep container alive (wait allows trap to fire, unlike tail -f)
+while true; do sleep infinity & wait $!; done
