@@ -19,26 +19,22 @@ Options:
   --memory MEM     Memory limit (e.g., 4g, 512m)
   --cpus NUM       CPU limit (e.g., 2, 0.5)
 
-Default (no cmd): smart enter
-  - if container doesn't exist: create + start + exec developer shell
-  - if exists but stopped:      start + exec developer shell
-  - if running:                 exec developer shell
-
 Commands:
   build        Build image
-  rebuild      Remove container + build image + up (keeps volumes, resets /usr/local)
-  dev          Smart enter (same as default)
-  up           Create+start (or start if exists), then exec developer shell
-  in           Exec into running container, or up if not running
+  create       Create container (don't start)
+  up           Start an existing stopped container
+  bash         Exec into running container
   stop         Stop container
   rm           Remove container (keeps volumes)
+  rebuild      Remove container + build image + recreate (keeps volumes)
   nuke         Remove container + volumes (DANGEROUS)
   status       Show status
 
 Examples:
-  ./dev.sh                              # Default devmachine
-  ./dev.sh --name dev-alice dev         # Replica for alice
-  ./dev.sh --name dev-bob --memory 4g --cpus 2 up
+  ./dev.sh --name dev-alice create
+  ./dev.sh --name dev-alice up
+  ./dev.sh --name dev-alice bash
+  ./dev.sh --name dev-bob --memory 4g --cpus 2 create
   ./dev.sh --name dev-alice stop
   ./dev.sh --name dev-alice nuke
 EOF
@@ -81,49 +77,54 @@ exec_shell() {
   docker exec -it --user developer --workdir /home/developer "$NAME" bash -l
 }
 
-cmd_up() {
+cmd_create() {
+  if exists_container; then
+    echo "Error: Container '$NAME' already exists." >&2
+    exit 1
+  fi
+
   ensure_image
 
   docker volume inspect "$HOME_VOL" >/dev/null 2>&1 || docker volume create "$HOME_VOL" >/dev/null
   docker volume inspect "$DIND_VOL" >/dev/null 2>&1 || docker volume create "$DIND_VOL" >/dev/null
   docker volume inspect "$LOCAL_VOL" >/dev/null 2>&1 || docker volume create "$LOCAL_VOL" >/dev/null
 
+  local run_args=(
+    -d
+    --name "$NAME"
+    --privileged
+    --network host
+    --restart unless-stopped
+    -e TERM="${TERM:-xterm-256color}"
+    -v "$HOME_VOL":/home/developer
+    -v "$DIND_VOL":/var/lib/docker
+    -v "$LOCAL_VOL":/usr/local
+  )
+
+  [[ -n "$MEMORY" ]] && run_args+=(--memory "$MEMORY")
+  [[ -n "$CPUS" ]]   && run_args+=(--cpus "$CPUS")
+
+  docker run "${run_args[@]}" "$IMAGE" >/dev/null
+}
+
+cmd_up() {
   if ! exists_container; then
-    local run_args=(
-      -d
-      --name "$NAME"
-      --privileged
-      --network host
-      --restart unless-stopped
-      -e TERM="${TERM:-xterm-256color}"
-      -v "$HOME_VOL":/home/developer
-      -v "$DIND_VOL":/var/lib/docker
-      -v "$LOCAL_VOL":/usr/local
-    )
-
-    [[ -n "$MEMORY" ]] && run_args+=(--memory "$MEMORY")
-    [[ -n "$CPUS" ]]   && run_args+=(--cpus "$CPUS")
-
-    docker run "${run_args[@]}" "$IMAGE" >/dev/null
-  else
-    if ! running_container; then
-      docker start "$NAME" >/dev/null
-    fi
+    echo "Error: Container '$NAME' not found. Run './dev.sh create' first." >&2
+    exit 1
   fi
-
-  exec_shell
-}
-
-cmd_in() {
   if running_container; then
-    exec_shell
-  else
-    cmd_up
+    echo "Container '$NAME' is already running."
+    return
   fi
+  docker start "$NAME" >/dev/null
 }
 
-cmd_dev() {
-  cmd_up
+cmd_bash() {
+  if ! running_container; then
+    echo "Error: Container '$NAME' is not running. Run './dev.sh up' first." >&2
+    exit 1
+  fi
+  exec_shell
 }
 
 cmd_stop() { docker stop "$NAME" >/dev/null 2>&1 || true; }
@@ -136,8 +137,8 @@ cmd_rm() {
 cmd_rebuild() {
   cmd_rm
   cmd_build
-  # Reset /usr/local volume so Docker re-populates from new image
   docker volume rm "$LOCAL_VOL" >/dev/null 2>&1 || true
+  cmd_create
   cmd_up
 }
 
@@ -164,14 +165,15 @@ cmd_status() {
 }
 
 case "$CMD" in
-  ""|dev)   cmd_dev ;;
+  "")       usage; exit 0 ;;
   build)    cmd_build ;;
-  rebuild)  cmd_rebuild ;;
+  create)   cmd_create ;;
   up)       cmd_up ;;
-  in)       cmd_in ;;
+  bash)     cmd_bash ;;
   stop)     cmd_stop ;;
   rm)       cmd_rm ;;
+  rebuild)  cmd_rebuild ;;
   nuke)     cmd_nuke ;;
   status)   cmd_status ;;
-  *) usage; exit 1 ;;
+  *) echo "Error: unknown command: $CMD" >&2; usage; exit 1 ;;
 esac
